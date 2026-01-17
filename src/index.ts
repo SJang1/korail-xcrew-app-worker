@@ -4,6 +4,17 @@ import { mapConcurrent, generateColor } from './utils';
 import { FCM, FcmOptions, EnhancedFcmMessage } from 'fcm-cloudflare-workers';
 
 
+interface PushNotification {
+    id: string;
+    username: string;
+    fcmToken: string;
+    trainNo: string;
+    driveDate: string;
+    stationName: string;
+    stationIndex: number;
+}
+
+
 export default {
 
     async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -19,7 +30,7 @@ export default {
 
 const fcm = new FCM(fcmOptions);
         console.log("Cron processed: checking push notifications");
-        const { results } = await env.DB.prepare("SELECT * FROM push_notifications").all();
+        const { results } = await env.DB.prepare("SELECT * FROM push_notifications").all<PushNotification>();
         if (!results || results.length === 0) {
             console.log("No push notification requests to process.");
             return;
@@ -27,15 +38,14 @@ const fcm = new FCM(fcmOptions);
 
 
 
-        // Group requests by unique train
-        const requestsByTrain = new Map<string, any[]>();
-        for (const record of results as any[]) {
+        // Group alert requests by unique train (trainNo + driveDate) to avoid duplicate API calls.
+        const requestsByTrain = results.reduce((acc, record) => {
             const key = `${record.trainNo}|${record.driveDate}`;
-            if (!requestsByTrain.has(key)) {
-                requestsByTrain.set(key, []);
-            }
-            requestsByTrain.get(key)!.push(record);
-        }
+            const group = acc.get(key) ?? [];
+            group.push(record);
+            acc.set(key, group);
+            return acc;
+        }, new Map<string, PushNotification[]>());
 
         const client = new TrainClient();
         const apiToken = await env.NXLOGIS_SECRET.get();
@@ -738,7 +748,7 @@ const fcm = new FCM(fcmOptions);
                         await env.DB.prepare(
                             "INSERT INTO push_notifications (id, username, fcmToken, trainNo, driveDate, stationName, stationIndex) VALUES (?, ?, ?, ?, ?, ?, ?)"
                         )
-                            .bind(id, session.username, fcmToken, trainNo, driveDate, stationName)
+                            .bind(id, session.username, fcmToken, trainNo, driveDate, stationName, stationIndex)
                             .run();
                         return Response.json({ success: true, id }, { headers: corsHeaders });
                     } catch (e: any) {
@@ -750,6 +760,28 @@ const fcm = new FCM(fcmOptions);
                 
                 if (path === "/api/admin/users" && method === "GET") {
                     const { results } = await env.DB.prepare("SELECT id, username, name, created_at FROM users ORDER BY created_at DESC").all();
+                    return Response.json({ success: true, data: results }, { headers: corsHeaders });
+                }
+
+                if (path === "/api/admin/users" && method === "POST") {
+                    const { username, name } = await request.json() as any;
+                    // search for users and return user data
+
+                    let query = "SELECT id, username, name, created_at FROM users WHERE 1=1";
+                    const params: any[] = [];
+
+                    if (username) {
+                        query += " AND username LIKE ?";
+                        params.push(`%${username}%`);
+                    }
+                    if (name) {
+                        query += " AND name LIKE ?";
+                        params.push(`%${name}%`);
+                    }
+
+                    query += " ORDER BY created_at DESC";
+
+                    const { results } = await env.DB.prepare(query).bind(...params).all();
                     return Response.json({ success: true, data: results }, { headers: corsHeaders });
                 }
 
