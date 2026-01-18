@@ -115,7 +115,7 @@ const fcm = new FCM(fcmOptions);
                             shouldDelete = true;
                         }
                     } else {
-                        const hasDeparted = !!departureTime;
+                        const hasDeparted = !!departureTime && departureTime !== "00:00:00";
     
                         if (hasDeparted) {
                             messageBody = `${record.trainNo} 열차가 ${record.stationName}역에서 출발했습니다.\n출발시간: ${departureTime}\n운행일자: ${trainData.info?.driveDate}`;
@@ -123,7 +123,10 @@ const fcm = new FCM(fcmOptions);
                         } else {
                             // Check if it has passed the station without a record
                             const subsequentStations = trainData.schedule.slice(stationIndex + 1);
-                            const nextDepartedStation = subsequentStations.find((info: any) => info.actualDepartureTime || info.scheduledDepartureTime);
+                            const nextDepartedStation = subsequentStations.find((info: any) => {
+                                const depTime = info.actualDepartureTime || info.scheduledDepartureTime;
+                                return depTime && depTime !== "00:00:00";
+                            });
     
                             if (nextDepartedStation) {
                                 const nextStationName = nextDepartedStation.stationName;
@@ -753,6 +756,47 @@ const fcm = new FCM(fcmOptions);
                         return Response.json({ success: true, id }, { headers: corsHeaders });
                     } catch (e: any) {
                         return new Response(`Failed to register push notification: ${e.message}`, { status: 500, headers: corsHeaders });
+                    }
+                }
+
+                if (path === "/api/push/unregister" && method === "POST") {
+                    if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    const { id, trainNo, driveDate, stationName } = await request.json() as any;
+                    if (!id) {
+                        return new Response("Missing id", { status: 400, headers: corsHeaders });
+                    }
+
+                    try {
+                        var current_pushes = await env.DB.prepare("SELECT * FROM push_notifications WHERE id = ? AND username = ? AND trainNo = ? AND driveDate = ? AND stationName = ?")
+                            .bind(id, session.username, trainNo, driveDate, stationName)
+                            .first();
+                    } catch (e: any) {
+                        return new Response(`Push notification not found: ${e.message}`, { status: 404, headers: corsHeaders });
+                    }
+
+                    if (!current_pushes) {
+                        return new Response("Push notification not found or does not belong to you", { status: 404, headers: corsHeaders });
+                    }
+
+                    try {
+                        await env.DB.prepare("DELETE FROM push_notifications WHERE id = ? AND username = ?")
+                            .bind(id, session.username)
+                            .run();
+                        return Response.json({ success: true }, { headers: corsHeaders });
+                    } catch (e: any) {
+                        return new Response(`Failed to unregister push notification: ${e.message}`, { status: 500, headers: corsHeaders });
+                    }
+                }
+
+                if (path === "/api/push/list" && method === "GET") {                   
+                    if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    try {
+                        const { results } = await env.DB.prepare("SELECT * FROM push_notifications WHERE username = ?")
+                            .bind(session.username)
+                            .all();
+                        return Response.json({ success: true, data: results }, { headers: corsHeaders });
+                    } catch (e: any) {
+                        return new Response(`Failed to list push notifications: ${e.message}`, { status: 500, headers: corsHeaders });
                     }
                 }
 
