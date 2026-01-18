@@ -14,8 +14,76 @@ interface PushNotification {
     stationIndex: number;
 }
 
+interface WorkPsttQueueMessage {
+    tag: 'work-pstt-fetch';
+    username: string;
+    xcrewPw: string;
+    empName: string;
+    date: string;
+}
+
 
 export default {
+
+    async queue(batch: MessageBatch<WorkPsttQueueMessage>, env: Env, ctx: ExecutionContext): Promise<void> {
+        console.log(`Processing ${batch.messages.length} work pstt fetch requests`);
+        
+        // Group messages by credentials to avoid multiple authentication attempts
+        const messagesByCredentials = new Map<string, Message<WorkPsttQueueMessage>[]>();
+        
+        for (const message of batch.messages) {
+            const { tag, username, xcrewPw } = message.body;
+            
+            // Validate message tag
+            if (tag !== 'work-pstt-fetch') {
+                console.error(`Invalid message tag: ${tag}. Expected 'work-pstt-fetch'. Skipping message.`);
+                message.ack();
+                continue;
+            }
+            
+            const credKey = `${username}:${xcrewPw}`;
+            const group = messagesByCredentials.get(credKey) ?? [];
+            group.push(message);
+            messagesByCredentials.set(credKey, group);
+        }
+        
+        // Process each credential group with a single authenticated session
+        for (const [credKey, messages] of messagesByCredentials) {
+            const { username, xcrewPw, empName } = messages[0].body;
+            
+            try {
+                // Create one client instance for all messages with same credentials
+                const client = new KorailClient(username, xcrewPw);
+                
+                // Process all dates for this user sequentially to avoid session conflicts
+                for (const message of messages) {
+                    try {
+                        const { date } = message.body;
+                        const workPsttData = await client.getSearchExtrCrewWrkPstt(date, empName);
+                        
+                        if (workPsttData && workPsttData.data && Array.isArray(workPsttData.data)) {
+                            for (const item of workPsttData.data) {
+                                await env.DB.prepare(
+                                    "INSERT OR REPLACE INTO searchExtrCrewWrkPstt (username, pjtDt, pdiaNo, repTrn1No, gwkTm, repTrn2No, loiwTm, empNm1, empNm2, empNm3, empNm4) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                )
+                                    .bind(username, date, item.pdiaNo, item.repTrn1No.trim(), item.gwkTm, item.repTrn2No.trim(), item.loiwTm, item.empNm1.trim(), item.empNm2.trim(), item.empNm3.trim(), item.empNm4.trim())
+                                    .run();
+                            }
+                            console.log(`Saved ${workPsttData.data.length} workPstt records for ${username} on ${date}`);
+                        }
+                        
+                        message.ack();
+                    } catch (e: any) {
+                        console.error(`Failed to fetch work pstt for ${message.body.date}:`, e.message);
+                        // Let the message retry with default retry policy
+                    }
+                }
+            } catch (e: any) {
+                console.error(`Failed to create client for ${username}:`, e.message);
+                // If client creation fails, all messages in this group will retry
+            }
+        }
+    },
 
     async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 
@@ -552,6 +620,37 @@ const fcm = new FCM(fcmOptions);
 
                     const client = new KorailClient(xcrewId, xcrewPw);
                     try {
+                        // Helper function to generate all dates in the month
+                        const getDateRangeInMonth = (dateStr: string): string[] => {
+                            const year = parseInt(dateStr.substring(0, 4));
+                            const month = parseInt(dateStr.substring(4, 6));
+                            const firstDay = new Date(year, month - 1, 1);
+                            const lastDay = new Date(year, month, 0);
+                            const dates: string[] = [];
+                            
+                            for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
+                                const yyyy = d.getFullYear().toString();
+                                const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+                                const dd = d.getDate().toString().padStart(2, '0');
+                                dates.push(`${yyyy}${mm}${dd}`);
+                            }
+                            return dates;
+                        };
+
+                        const dateRange = getDateRangeInMonth(date);
+                        
+                        // Queue workPsttData fetch requests for all dates in the month
+                        const queueMessages: WorkPsttQueueMessage[] = dateRange.map(currentDate => ({
+                            tag: 'work-pstt-fetch',
+                            username: xcrewId,
+                            xcrewPw: xcrewPw,
+                            empName: empName,
+                            date: currentDate
+                        }));
+                        
+                        await env.WORK_PSTT_QUEUE.sendBatch(queueMessages.map(msg => ({ body: msg })));
+                        console.log(`Queued ${queueMessages.length} work pstt fetch requests for ${xcrewId}`);
+
                         // 1. Fetch Schedule
                         const schedule = await client.getSchedule(date, empName);
                         
@@ -719,6 +818,44 @@ const fcm = new FCM(fcmOptions);
                     } catch (e: any) {
                          return Response.json({ success: false, error: e.message }, { status: 500, headers: corsHeaders });
                     }
+                }
+
+                if (path === "/api/xcrew/work-pstt" && method === "POST") {
+                    if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    
+                    const { username: requestedUsername, date, pdiaNo } = await request.json() as any;
+                    let targetUsername: string;
+                    
+                    if (session.isAdmin) {
+                        // Admins can query any user, or their own data if no username specified
+                        targetUsername = requestedUsername || session.username;
+                    } else {
+                        // Non-admins can only access their own data
+                        targetUsername = session.username;
+                        if (requestedUsername && requestedUsername !== targetUsername) {
+                            return new Response("Unauthorized: You can only access your own data.", { status: 403, headers: corsHeaders });
+                        }
+                    }
+
+                    let query = "SELECT * FROM searchExtrCrewWrkPstt WHERE username = ?";
+                    const params: any[] = [targetUsername];
+
+                    if (date) {
+                        query += " AND pjtDt = ?";
+                        params.push(date);
+                    }
+
+                    if (pdiaNo) {
+                        query += " AND pdiaNo = ?";
+                        params.push(pdiaNo);
+                    }
+
+                    const { results } = await env.DB.prepare(query).bind(...params).all();
+
+                    return Response.json({ 
+                        success: true, 
+                        data: results || []
+                    }, { headers: corsHeaders });
                 }
                 
                 if (path === "/api/train" && method === "POST") {
@@ -948,5 +1085,5 @@ const fcm = new FCM(fcmOptions);
 
 		return new Response("Not Found", { status: 404 });
 	},
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env, WorkPsttQueueMessage>;
 

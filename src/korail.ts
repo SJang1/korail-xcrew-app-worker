@@ -128,8 +128,6 @@ export class KorailClient {
         }
     }
     
-    // We assume the caller wants data for a specific month or date
-    // Python: get_schedule(target_date) where target_date is YYYYMMDD
     async getSchedule(targetDate: string, employeeName: string): Promise<any[]> {
         return this._execute(
             async () => {
@@ -166,6 +164,46 @@ export class KorailClient {
 
                 const data = await this._parseJsonResponse(res2);
                 return data.data || [];
+            }
+        );
+    }
+
+    async getSearchExtrCrewWrkPstt(targetDate: string, employeeName: string): Promise<any> {
+        return this._execute(
+            async () => {
+                // Step 1: Visit list page
+                const pageUrl = `${BASE_URL}/extrCrewMg/extrIndCrewWrkList.do`;
+                const pageHeaders = {
+                    ...DEFAULT_HEADERS,
+                    "Referer": `${BASE_URL}/extrCrewMg/extrRltmCrewWrkPstt.do`,
+                    "Cookie": this.cookieHeader
+                };
+                
+                const res1 = await fetch(pageUrl, { headers: pageHeaders, redirect: 'manual' });
+                this.updateCookies(res1);
+                if (this._isSessionExpired(res1)) throw new Error("Session expired");
+
+                // Step 2: AJAX request to searchExtrCrewWrkPstt endpoint
+                const wrkPsttUrl = `${BASE_URL}/extrCrewMg/searchExtrCrewWrkPstt.do`;
+                const headers = {
+                    ...AJAX_HEADERS,
+                    "Referer": pageUrl,
+                    "Cookie": this.cookieHeader
+                };
+                const body = new URLSearchParams({
+                    "empNm": employeeName,
+                    "pjtDt": targetDate
+                });
+
+                const res2 = await fetch(wrkPsttUrl, {
+                    method: 'POST',
+                    headers: headers,
+                    body: body
+                });
+                this.updateCookies(res2);
+                if (this._isSessionExpired(res2)) throw new Error("Session expired");
+
+                return await this._parseJsonResponse(res2);
             }
         );
     }
