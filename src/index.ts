@@ -144,25 +144,36 @@ const fcm = new FCM(fcmOptions);
                 let messageBody = "";
                 let shouldDelete = false;
 
-                // Validate stationIndex and stationName
-                if (stationIndex === undefined ||
-                    !trainData.schedule[stationIndex] ||
-                    trainData.schedule[stationIndex].stationName !== record.stationName) {
-                    
-                    console.warn(`Station index/name mismatch for train ${record.trainNo}. DB says index ${record.stationIndex} is ${record.stationName}, but API has ${trainData.schedule[stationIndex]?.stationName}. Searching for a better match.`);
-                    
-                    // Fallback search: find the first match at or after the stored index
-                    const newIndex = trainData.schedule.findIndex((info: any, idx: number) =>
-                        idx >= (record.stationIndex || 0) && info.stationName === record.stationName
-                    );
+                // Cancellation / service-ended handling
+                if (trainData.info?.zone === "열차운휴") {
+                    messageBody = `${record.trainNo} 열차가 운휴되었습니다.\n운행일자: ${trainData.info?.driveDate ?? record.driveDate}`;
+                    shouldDelete = true;
+                } else if (trainData.info?.zone === "운행종료") {
+                    messageBody = `${record.trainNo} 열차가 운행 종료되었습니다.\n운행일자: ${trainData.info?.driveDate ?? record.driveDate}`;
+                    shouldDelete = true;
+                }
 
-                    if (newIndex !== -1) {
-                        stationIndex = newIndex;
-                    } else {
-                        // Could not definitively find station
-                        console.error(`Could not definitively find station ${record.stationName} for train ${record.trainNo}. Sending alert.`);
-                        messageBody = `${record.trainNo} 열차의 ${record.stationName}역 정보가 현재 조회되지 않습니다. 잠시 후 다시 시도해주세요.`;
-                        shouldDelete = true; // Still delete the record as it's an unresolvable request for now.
+                // Validate stationIndex and stationName
+                if (!messageBody) { // Only attempt station logic if not already cancelled/ended
+                    if (stationIndex === undefined ||
+                        !trainData.schedule[stationIndex] ||
+                        trainData.schedule[stationIndex].stationName !== record.stationName) {
+                        
+                        console.warn(`Station index/name mismatch for train ${record.trainNo}. DB says index ${record.stationIndex} is ${record.stationName}, but API has ${trainData.schedule[stationIndex]?.stationName}. Searching for a better match.`);
+                        
+                        // Fallback search: find the first match at or after the stored index
+                        const newIndex = trainData.schedule.findIndex((info: any, idx: number) =>
+                            idx >= (record.stationIndex || 0) && info.stationName === record.stationName
+                        );
+
+                        if (newIndex !== -1) {
+                            stationIndex = newIndex;
+                        } else {
+                            // Could not definitively find station
+                            console.error(`Could not definitively find station ${record.stationName} for train ${record.trainNo}. Sending alert.`);
+                            messageBody = `${record.trainNo} 열차의 ${record.stationName}역 정보가 현재 조회되지 않습니다. 잠시 후 다시 시도해주세요.`;
+                            shouldDelete = true; // Still delete the record as it's an unresolvable request for now.
+                        }
                     }
                 }
 
@@ -171,7 +182,7 @@ const fcm = new FCM(fcmOptions);
                     continue; // Skip if no valid station found and no error message was generated.
                 }
 
-                if (!messageBody) { // Only proceed to normal logic if no "not found" message is pending
+                if (!messageBody) { // Only proceed to normal logic if no message set yet
                     const isLastStation = stationIndex === trainData.schedule.length - 1;
                     const currentStationInfo = trainData.schedule[stationIndex];
                     const departureTime = currentStationInfo.actualDepartureTime || currentStationInfo.scheduledDepartureTime;
