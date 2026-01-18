@@ -185,8 +185,8 @@ const fcm = new FCM(fcmOptions);
                 if (!messageBody) { // Only proceed to normal logic if no message set yet
                     const isLastStation = stationIndex === trainData.schedule.length - 1;
                     const currentStationInfo = trainData.schedule[stationIndex];
-                    const departureTime = currentStationInfo.actualDepartureTime || currentStationInfo.scheduledDepartureTime;
-                    const arrivalTime = currentStationInfo.actualArrivalTime || currentStationInfo.scheduledArrivalTime;
+                    const departureTime = currentStationInfo.actualDepartureTime;
+                    const arrivalTime = currentStationInfo.actualArrivalTime;
     
                     if (isLastStation) {
                         if (arrivalTime) {
@@ -203,13 +203,13 @@ const fcm = new FCM(fcmOptions);
                             // Check if it has passed the station without a record
                             const subsequentStations = trainData.schedule.slice(stationIndex + 1);
                             const nextDepartedStation = subsequentStations.find((info: any) => {
-                                const depTime = info.actualDepartureTime || info.scheduledDepartureTime;
+                                const depTime = info.actualDepartureTime;
                                 return depTime && depTime !== "00:00:00";
                             });
     
                             if (nextDepartedStation) {
                                 const nextStationName = nextDepartedStation.stationName;
-                                const nextDepartureTime = nextDepartedStation.actualDepartureTime || nextDepartedStation.scheduledDepartureTime;
+                                const nextDepartureTime = nextDepartedStation.actualDepartureTime;
                                 messageBody = `${record.trainNo} 열차는 ${record.stationName}역을 통과한 것으로 보입니다 (시간 기록 없음).\n${nextStationName}역에서 ${nextDepartureTime}에 출발했습니다.\n운행일자: ${trainData.info?.driveDate}`;
                                 shouldDelete = true;
                             }
