@@ -39,12 +39,13 @@ export async function createJwt(payload: any, secret: string): Promise<string> {
 }
 
 export async function createSession(kv: KVNamespace, username: string, secret: string, prefix: string = ""): Promise<string> {
-    const token = await createJwt({ sub: username, role: prefix ? 'admin' : 'user' }, secret);
-    await kv.put(`${prefix}${username}`, token);
+    const jti = crypto.randomUUID();
+    const token = await createJwt({ sub: username, role: prefix ? 'admin' : 'user', jti }, secret);
+    await kv.put(`${prefix}${username}:${jti}`, token);
     return token;
 }
 
-export async function verifySession(kv: KVNamespace, request: Request, secret: string): Promise<{ username: string, isAdmin: boolean } | null> {
+export async function verifySession(kv: KVNamespace, request: Request, secret: string): Promise<{ username: string, isAdmin: boolean, jti?: string } | null> {
     let token: string | null = null;
     let isAdmin = false;
 
@@ -111,6 +112,7 @@ export async function verifySession(kv: KVNamespace, request: Request, secret: s
         // 4. Decode payload
         const payload = JSON.parse(atob(bodyB64.replace(/-/g, '+').replace(/_/g, '/')));
         const username = payload.sub;
+        const jti = payload.jti;
         
         if (!username) return null;
         
@@ -121,20 +123,41 @@ export async function verifySession(kv: KVNamespace, request: Request, secret: s
         
         // 5. Verify against KV (Session Revocation Check)
         const prefix = isAdmin ? "admin:" : "";
-        const storedToken = await kv.get(`${prefix}${username}`);
+        let storedToken: string | null = null;
+
+        if (jti) {
+             storedToken = await kv.get(`${prefix}${username}:${jti}`);
+        } else {
+            // Backward compatibility for old tokens without jti
+             storedToken = await kv.get(`${prefix}${username}`);
+        }
         
         if (storedToken !== token) {
             return null; // Token revoked or replaced
         }
         
-        return { username, isAdmin };
+        return { username, isAdmin, jti };
     } catch (e) {
         console.error("Token verification failed:", e);
         return null;
     }
 }
 
-export async function destroySession(kv: KVNamespace, username: string, prefix: string = "") {
+export async function destroySession(kv: KVNamespace, username: string, jti?: string, prefix: string = "") {
+    if (jti) {
+        await kv.delete(`${prefix}${username}:${jti}`);
+    } else {
+        await kv.delete(`${prefix}${username}`);
+    }
+}
+
+export async function revokeAllSessions(kv: KVNamespace, username: string, prefix: string = "") {
+    // Delete all sessions for this user with jti
+    const list = await kv.list({ prefix: `${prefix}${username}:` });
+    for (const key of list.keys) {
+        await kv.delete(key.name);
+    }
+    // Also delete old style key
     await kv.delete(`${prefix}${username}`);
 }
 
@@ -147,5 +170,5 @@ export async function deleteUserAccount(db: D1Database, kv: KVNamespace, usernam
                     ];
     
     await db.batch(batch);
-    await kv.delete(`${prefix}${username}`);
+    await revokeAllSessions(kv, username, prefix);
 }

@@ -1,5 +1,5 @@
 import { KorailClient, TrainClient } from './korail';
-import { createSession, destroySession, verifySession, deleteUserAccount } from './auth';
+import { createSession, destroySession, verifySession, deleteUserAccount, revokeAllSessions } from './auth';
 import { mapConcurrent, generateColor } from './utils';
 import { FCM, FcmOptions, EnhancedFcmMessage } from 'fcm-cloudflare-workers';
 
@@ -261,7 +261,7 @@ const fcm = new FCM(fcmOptions);
         const path = url.pathname;
         const method = request.method;
 
-        let session: { username: string, isAdmin: boolean } | null = null;
+        let session: { username: string, isAdmin: boolean, jti?: string } | null = null;
 
 		if (path.startsWith("/api/")) {
             // CORS headers
@@ -288,7 +288,7 @@ const fcm = new FCM(fcmOptions);
                 }
 
                 // General protected route protection
-                if ((path.startsWith("/api/xcrew/") || path.startsWith("/api/train") || path.startsWith("/api/user") || path === "/api/auth/logout") && !session) {
+                if ((path.startsWith("/api/xcrew/") || path.startsWith("/api/train") || path.startsWith("/api/user") || path === "/api/auth/logout" || path === "/api/auth/revoke-all") && !session) {
                     return new Response("Unauthorized: Invalid or expired session", { status: 401, headers: corsHeaders });
                 }
             }
@@ -326,7 +326,7 @@ const fcm = new FCM(fcmOptions);
 
                 if (path === "/api/admin/logout" && method === "POST") {
                     if (session?.isAdmin) {
-                        await destroySession(env.KORAIL_XCREW_SESSION_KV, session.username, "admin:");
+                        await destroySession(env.KORAIL_XCREW_SESSION_KV, session.username, session.jti, "admin:");
                     }
                     const cookie = `admin_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Strict`;
                     const headers = { ...corsHeaders, "Set-Cookie": cookie };
@@ -537,7 +537,7 @@ const fcm = new FCM(fcmOptions);
 
                 if (path === "/api/auth/logout" && method === "POST") {
                     if (session && !session.isAdmin) {
-                        await destroySession(env.KORAIL_XCREW_SESSION_KV, session.username);
+                        await destroySession(env.KORAIL_XCREW_SESSION_KV, session.username, session.jti);
                     }
                     // Clear the cookie by setting an expiry date in the past
                     const cookie = `auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Strict`;
@@ -545,6 +545,22 @@ const fcm = new FCM(fcmOptions);
                     
                     // Always return success, client will clear local storage regardless
                     return Response.json({ success: true }, { headers });
+                }
+
+                if (path === "/api/auth/revoke-all" && method === "POST") {
+                    if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    
+                    if (session.isAdmin) {
+                         // Decide if admins should be able to revoke all THEIR sessions, or user sessions. 
+                         // For now, let's assume it revokes THEIR sessions.
+                         await revokeAllSessions(env.KORAIL_XCREW_SESSION_KV, session.username, "admin:");
+                         const cookie = `admin_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Strict`;
+                         return Response.json({ success: true, message: "All admin sessions revoked" }, { headers: { ...corsHeaders, "Set-Cookie": cookie } });
+                    } else {
+                         await revokeAllSessions(env.KORAIL_XCREW_SESSION_KV, session.username);
+                         const cookie = `auth_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Strict`;
+                         return Response.json({ success: true, message: "All user sessions revoked" }, { headers: { ...corsHeaders, "Set-Cookie": cookie } });
+                    }
                 }
 
                 if (path === "/api/auth/cancel" && method === "DELETE") {
