@@ -76,7 +76,8 @@ export function generateColor(seed: string): string {
     
     // Ensure positive and spread hues better
     // Using a prime multiplier to increase distance between close hashes
-    const h = Math.abs(hash * 131) % 360;
+    // Avoid red/near-red (0-30 and 330-360) by mapping to 30-330
+    const h = 30 + (Math.abs(hash * 131) % 300);
     
     // Vary lightness and saturation slightly for better distinction
     const s = 65 + (Math.abs(hash) % 15); // 65-80%

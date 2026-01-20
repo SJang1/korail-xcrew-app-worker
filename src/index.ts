@@ -776,7 +776,8 @@ const fcm = new FCM(fcmOptions);
                                             if (!existing) break;
                                             
                                             // Shift hue if collision
-                                            const hue = Math.floor(Math.random() * 360);
+                                            // Avoid red/near-red (0-30 and 330-360) by mapping to 30-330
+                                            const hue = Math.floor(30 + Math.random() * 300);
                                             newColor = `hsl(${hue}, 70%, 85%)`;
                                             retries++;
                                         }
@@ -923,13 +924,11 @@ const fcm = new FCM(fcmOptions);
 
                 if (path === "/api/xcrew/location/override" && method === "POST") {
                     if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
-                    const { date: rawDate, location } = await request.json() as any;
+                    const { date, location } = await request.json() as any;
                     
-                    if (!rawDate || !location) {
+                    if (!date || !location) {
                         return new Response("Missing params", { status: 400, headers: corsHeaders });
                     }
-                    
-                    const date = rawDate.replace(/-/g, '');
 
                     try {
                         await env.DB.prepare("INSERT OR REPLACE INTO working_location_overrides (username, date, location, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
@@ -947,7 +946,8 @@ const fcm = new FCM(fcmOptions);
                             while (retries < 10) {
                                 const existing = await env.DB.prepare("SELECT 1 FROM location_colors WHERE color = ?").bind(newColor).first();
                                 if (!existing) break;
-                                const hue = Math.floor(Math.random() * 360);
+                                // Avoid red/near-red (0-30 and 330-360) by mapping to 30-330
+                                const hue = Math.floor(30 + Math.random() * 300);
                                 newColor = `hsl(${hue}, 70%, 85%)`;
                                 retries++;
                             }
