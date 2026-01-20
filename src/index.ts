@@ -887,7 +887,7 @@ const fcm = new FCM(fcmOptions);
                 if (path === "/api/xcrew/work-pstt" && method === "POST") {
                     if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
                     
-                    const { username: requestedUsername, date, pdiaNo } = await request.json() as any;
+                    const { username: requestedUsername, date, pdiaNo, trainNo } = await request.json() as any;
                     let targetUsername: string;
                     
                     if (session.isAdmin) {
@@ -901,17 +901,21 @@ const fcm = new FCM(fcmOptions);
                         }
                     }
 
-                    let query = "SELECT * FROM searchExtrCrewWrkPstt WHERE username = ?";
-                    const params: any[] = [targetUsername];
-
-                    if (date) {
-                        query += " AND pjtDt = ?";
-                        params.push(date);
+                    if (!date) {
+                         return new Response("Missing date param", { status: 400, headers: corsHeaders });
                     }
+
+                    let query = "SELECT * FROM searchExtrCrewWrkPstt WHERE username = ? AND pjtDt = ?";
+                    const params: any[] = [targetUsername, date];
 
                     if (pdiaNo) {
                         query += " AND pdiaNo = ?";
                         params.push(pdiaNo);
+                    }
+
+                    if (trainNo) {
+                        query += " AND (repTrn1No = ? OR repTrn2No = ?)";
+                        params.push(trainNo, trainNo);
                     }
 
                     const { results } = await env.DB.prepare(query).bind(...params).all();
