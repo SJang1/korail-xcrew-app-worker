@@ -604,14 +604,27 @@ const fcm = new FCM(fcmOptions);
                             .bind(targetUsername, `${monthPrefix}%`)
                             .all();
                         
+                        const { results: overrides } = await env.DB.prepare("SELECT date, location FROM working_location_overrides WHERE username = ? AND date LIKE ?")
+                            .bind(targetUsername, `${monthPrefix}%`)
+                            .all();
+                        
                         const locMap = (locs || []).reduce((acc: any, curr: any) => {
                             acc[curr.date] = curr.location;
                             return acc;
                         }, {});
 
+                        const overrideMap = (overrides || []).reduce((acc: any, curr: any) => {
+                            acc[curr.date] = curr.location;
+                            return acc;
+                        }, {});
+
                         scheduleData = scheduleData.map((item: any) => {
-                            if (locMap[item.pjtDt]) {
+                            if (overrideMap[item.pjtDt]) {
+                                item.location = overrideMap[item.pjtDt];
+                                item.isWorkingLocationOverridden = true;
+                            } else if (locMap[item.pjtDt]) {
                                 item.location = locMap[item.pjtDt];
+                                item.isWorkingLocationOverridden = false;
                             }
                             return item;
                         });
@@ -883,6 +896,65 @@ const fcm = new FCM(fcmOptions);
                         success: true, 
                         data: results || []
                     }, { headers: corsHeaders });
+                }
+
+                if (path === "/api/xcrew/location/override" && method === "POST") {
+                    if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    const { date, location } = await request.json() as any;
+                    
+                    if (!date || !location) {
+                        return new Response("Missing params", { status: 400, headers: corsHeaders });
+                    }
+
+                    try {
+                        await env.DB.prepare("INSERT OR REPLACE INTO working_location_overrides (username, date, location, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
+                            .bind(session.username, date, location)
+                            .run();
+                        
+                        // Ensure color exists
+                        let colorRow = await env.DB.prepare("SELECT color FROM location_colors WHERE name = ?")
+                            .bind(location)
+                            .first();
+                        
+                        if (!colorRow) {
+                            let newColor = generateColor(location);
+                            let retries = 0;
+                            while (retries < 10) {
+                                const existing = await env.DB.prepare("SELECT 1 FROM location_colors WHERE color = ?").bind(newColor).first();
+                                if (!existing) break;
+                                const hue = Math.floor(Math.random() * 360);
+                                newColor = `hsl(${hue}, 70%, 85%)`;
+                                retries++;
+                            }
+                            await env.DB.prepare("INSERT INTO location_colors (name, color) VALUES (?, ?)").bind(location, newColor).run();
+                        }
+
+                        return Response.json({ success: true }, { headers: corsHeaders });
+                    } catch (e: any) {
+                        return Response.json({ success: false, error: e.message }, { status: 500, headers: corsHeaders });
+                    }
+                }
+
+                if (path === "/api/xcrew/location/override" && method === "DELETE") {
+                    if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    
+                    // Allow getting date from query params or body logic if needed, but DELETE typically uses query or path.
+                    // Let's assume body for symmetry or query param. Body in DELETE is controversial but supported by some clients.
+                    // Prefer query param for DELETE.
+                    
+                    const date = url.searchParams.get("date");
+                    if (!date) {
+                         return new Response("Missing date param", { status: 400, headers: corsHeaders });
+                    }
+
+                    try {
+                        await env.DB.prepare("DELETE FROM working_location_overrides WHERE username = ? AND date = ?")
+                            .bind(session.username, date)
+                            .run();
+                        return Response.json({ success: true }, { headers: corsHeaders });
+                    } catch (e: any) {
+                        return Response.json({ success: false, error: e.message }, { status: 500, headers: corsHeaders });
+                    }
                 }
                 
                 if (path === "/api/train" && method === "POST") {
