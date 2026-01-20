@@ -692,7 +692,7 @@ const fcm = new FCM(fcmOptions);
                         console.log(`Queued ${queueMessages.length} work pstt fetch requests for ${xcrewId}`);
 
                         // 1. Fetch Schedule
-                        const schedule = await client.getSchedule(date, empName);
+                        let schedule = await client.getSchedule(date, empName);
                         
                         // 2. Identify working days to update
                         // Filter: pdiaNo exists, is not "S", and does not start with "~"
@@ -792,6 +792,29 @@ const fcm = new FCM(fcmOptions);
                         };
 
                         await mapConcurrent(workingDays, concurrency, processDay);
+
+                        // Apply overrides to the final schedule
+                        const monthPrefix = date.substring(0, 6); // YYYYMM
+                        const { results: overrides } = await env.DB.prepare("SELECT date, location FROM working_location_overrides WHERE username = ? AND date LIKE ?")
+                            .bind(xcrewId, `${monthPrefix}%`)
+                            .all();
+
+                        const overrideMap = (overrides || []).reduce((acc: any, curr: any) => {
+                            acc[curr.date] = curr.location;
+                            return acc;
+                        }, {});
+
+                        schedule = schedule.map((item: any) => {
+                            if (overrideMap[item.pjtDt]) {
+                                item.location = overrideMap[item.pjtDt];
+                                item.isWorkingLocationOverridden = true;
+                            } else {
+                                if (item.location) {
+                                    item.isWorkingLocationOverridden = false;
+                                }
+                            }
+                            return item;
+                        });
                         
                         // 4. Fetch all colors
                         const { results: colors } = await env.DB.prepare("SELECT * FROM location_colors").all();
@@ -900,11 +923,13 @@ const fcm = new FCM(fcmOptions);
 
                 if (path === "/api/xcrew/location/override" && method === "POST") {
                     if (!session) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
-                    const { date, location } = await request.json() as any;
+                    const { date: rawDate, location } = await request.json() as any;
                     
-                    if (!date || !location) {
+                    if (!rawDate || !location) {
                         return new Response("Missing params", { status: 400, headers: corsHeaders });
                     }
+                    
+                    const date = rawDate.replace(/-/g, '');
 
                     try {
                         await env.DB.prepare("INSERT OR REPLACE INTO working_location_overrides (username, date, location, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
