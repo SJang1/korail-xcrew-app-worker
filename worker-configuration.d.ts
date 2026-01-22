@@ -8,6 +8,7 @@ declare namespace Cloudflare {
 	interface Env {
 		KORAIL_XCREW_SESSION_KV: KVNamespace;
 		PUSH_KV: KVNamespace;
+		KCrew_AppData: KVNamespace;
 		FIREBASE_SERVICE_ACCOUNT_JSON: string;
 		DB: D1Database;
 		NXLOGIS_SECRET: SecretsStoreSecret;

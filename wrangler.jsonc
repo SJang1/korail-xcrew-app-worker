@@ -25,6 +25,10 @@
 		{
 			"binding": "PUSH_KV",
 			"id": "b98816527c614ccc803ad82bb716fbff"
+		},
+		{
+			"binding": "KCrew_AppData",
+			"id": "b2d0c3ca8fbf46c0857d5e3fbf9ba32e"
 		}
 	],
 	"secrets_store_secrets": [

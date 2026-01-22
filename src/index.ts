@@ -3,6 +3,20 @@ import { createSession, destroySession, verifySession, deleteUserAccount, revoke
 import { mapConcurrent, generateColor } from './utils';
 import { FCM, FcmOptions, EnhancedFcmMessage } from 'fcm-cloudflare-workers';
 
+function compareVersions(v1: string, v2: string): number {
+    const p1 = v1.split('.').map(Number);
+    const p2 = v2.split('.').map(Number);
+    const len = Math.max(p1.length, p2.length);
+
+    for (let i = 0; i < len; i++) {
+        const n1 = p1[i] || 0;
+        const n2 = p2[i] || 0;
+        if (n1 > n2) return 1;
+        if (n1 < n2) return -1;
+    }
+    return 0;
+}
+
 
 interface PushNotification {
     id: string;
@@ -398,6 +412,54 @@ const fcm = new FCM(fcmOptions);
                     return Response.json({ success: true }, { headers: corsHeaders });
                 }
 
+
+                // --- App Version Endpoints ---
+                if (path === "/api/app/version" && method === "GET") {
+                    const version = await env.KCrew_AppData.get("app_version") || "0.0.0";
+                    const updateUrl = await env.KCrew_AppData.get("app_update_url") || "";
+                    
+                    return Response.json({ success: true, version, updateUrl }, { headers: corsHeaders });
+                }
+
+                if (path === "/api/app/version/check" && method === "GET") {
+                    const clientVer = url.searchParams.get("ver");
+                    if (!clientVer) return new Response("Missing version param", { status: 400, headers: corsHeaders });
+                    
+                    const serverVer = await env.KCrew_AppData.get("app_version") || "0.0.0";
+                    const hasUpdate = compareVersions(serverVer, clientVer) > 0;
+                    
+                    const responseData: any = { 
+                        success: true, 
+                        hasUpdate, 
+                        currentVersion: serverVer
+                    };
+                    
+                    if (hasUpdate) {
+                         responseData.updateUrl = await env.KCrew_AppData.get("app_update_url") || "";
+                    }
+
+                    return Response.json(responseData, { headers: corsHeaders });
+                }
+
+                if (path === "/api/app/version" && method === "POST") {
+                    if (!session || !session.isAdmin) return new Response("Unauthorized: Admin access required", { status: 401, headers: corsHeaders });
+                    
+                    const { version, updateUrl } = await request.json() as any;
+                    
+                    if (version) {
+                        // Simple Validation format X.Y.Z
+                        if (!/^\d+\.\d+\.\d+$/.test(version)) {
+                             return new Response("Invalid version format. Use X.Y.Z", { status: 400, headers: corsHeaders });
+                        }
+                        await env.KCrew_AppData.put("app_version", version);
+                    }
+                    
+                    if (updateUrl !== undefined) {
+                         await env.KCrew_AppData.put("app_update_url", updateUrl);
+                    }
+
+                    return Response.json({ success: true, message: "Version info updated" }, { headers: corsHeaders });
+                }
 
                 // --- User Management Endpoints ---
                 if (path === "/api/user/profile" && (method === "GET" || method === "POST")) {
