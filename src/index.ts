@@ -44,11 +44,12 @@ export default {
         
         // Find the first valid message to determine the username for this batch
         let firstUsername: string | null = null;
+        let firstCredentials: { xcrewPw: string; empName: string } | null = null;
         const messagesToProcess: Message<WorkPsttQueueMessage>[] = [];
         const messagesToRetry: Message<WorkPsttQueueMessage>[] = [];
         
         for (const message of batch.messages) {
-            const { tag, username } = message.body;
+            const { tag, username, xcrewPw, empName } = message.body;
             
             // Validate message tag
             if (tag !== 'work-pstt-fetch') {
@@ -57,26 +58,34 @@ export default {
                 continue;
             }
             
-            // Set the first username if not set yet
+            // Set the first username and credentials if not set yet
             if (firstUsername === null) {
                 firstUsername = username;
+                firstCredentials = { xcrewPw, empName };
             }
             
-            // If username matches the first username, process it; otherwise, retry for next batch
+            // If username matches the first username, validate credentials match
             if (username === firstUsername) {
-                messagesToProcess.push(message);
+                // Verify credentials match for the same username
+                if (xcrewPw === firstCredentials!.xcrewPw && empName === firstCredentials!.empName) {
+                    messagesToProcess.push(message);
+                } else {
+                    // Same username but different credentials - retry for next batch
+                    console.log(`Retrying message for same user but different credentials: ${username}`);
+                    messagesToRetry.push(message);
+                }
             } else {
                 messagesToRetry.push(message);
             }
         }
         
-        // Retry messages with different usernames for next batch
+        // Retry messages with different usernames or credentials for next batch
         for (const message of messagesToRetry) {
             console.log(`Retrying message for different user: ${message.body.username}`);
             message.retry();
         }
         
-        // Process only messages with the same username
+        // Process only messages with the same username and credentials
         if (messagesToProcess.length > 0) {
             const { username, xcrewPw, empName } = messagesToProcess[0].body;
             console.log(`Processing ${messagesToProcess.length} messages for user: ${username}`);
@@ -110,7 +119,10 @@ export default {
                 }
             } catch (e: any) {
                 console.error(`Failed to create client for ${username}:`, e.message);
-                // If client creation fails, all messages in this group will retry
+                // If client creation fails, retry all messages in this group
+                for (const message of messagesToProcess) {
+                    message.retry();
+                }
             }
         }
     },
