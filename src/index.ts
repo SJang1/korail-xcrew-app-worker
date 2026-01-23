@@ -42,11 +42,13 @@ export default {
     async queue(batch: MessageBatch<WorkPsttQueueMessage>, env: Env, ctx: ExecutionContext): Promise<void> {
         console.log(`Processing ${batch.messages.length} work pstt fetch requests`);
         
-        // Group messages by credentials to avoid multiple authentication attempts
-        const messagesByCredentials = new Map<string, Message<WorkPsttQueueMessage>[]>();
+        // Find the first valid message to determine the username for this batch
+        let firstUsername: string | null = null;
+        const messagesToProcess: Message<WorkPsttQueueMessage>[] = [];
+        const messagesToRetry: Message<WorkPsttQueueMessage>[] = [];
         
         for (const message of batch.messages) {
-            const { tag, username, xcrewPw } = message.body;
+            const { tag, username } = message.body;
             
             // Validate message tag
             if (tag !== 'work-pstt-fetch') {
@@ -55,22 +57,36 @@ export default {
                 continue;
             }
             
-            const credKey = `${username}:${xcrewPw}`;
-            const group = messagesByCredentials.get(credKey) ?? [];
-            group.push(message);
-            messagesByCredentials.set(credKey, group);
+            // Set the first username if not set yet
+            if (firstUsername === null) {
+                firstUsername = username;
+            }
+            
+            // If username matches the first username, process it; otherwise, retry for next batch
+            if (username === firstUsername) {
+                messagesToProcess.push(message);
+            } else {
+                messagesToRetry.push(message);
+            }
         }
         
-        // Process each credential group with a single authenticated session
-        for (const [credKey, messages] of messagesByCredentials) {
-            const { username, xcrewPw, empName } = messages[0].body;
+        // Retry messages with different usernames for next batch
+        for (const message of messagesToRetry) {
+            console.log(`Retrying message for different user: ${message.body.username}`);
+            message.retry();
+        }
+        
+        // Process only messages with the same username
+        if (messagesToProcess.length > 0) {
+            const { username, xcrewPw, empName } = messagesToProcess[0].body;
+            console.log(`Processing ${messagesToProcess.length} messages for user: ${username}`);
             
             try {
                 // Create one client instance for all messages with same credentials
                 const client = new KorailClient(username, xcrewPw);
                 
                 // Process all dates for this user sequentially to avoid session conflicts
-                for (const message of messages) {
+                for (const message of messagesToProcess) {
                     try {
                         const { date } = message.body;
                         const workPsttData = await client.getSearchExtrCrewWrkPstt(date, empName);
