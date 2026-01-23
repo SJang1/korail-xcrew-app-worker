@@ -65,9 +65,9 @@ export default {
             }
             
             // If username matches the first username, validate credentials match
-            if (username === firstUsername) {
+            if (username === firstUsername && firstCredentials !== null) {
                 // Verify credentials match for the same username
-                if (xcrewPw === firstCredentials!.xcrewPw && empName === firstCredentials!.empName) {
+                if (xcrewPw === firstCredentials.xcrewPw && empName === firstCredentials.empName) {
                     messagesToProcess.push(message);
                 } else {
                     // Same username but different credentials - retry for next batch
