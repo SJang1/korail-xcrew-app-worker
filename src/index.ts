@@ -44,12 +44,12 @@ export default {
         
         // Find the first valid message to determine the username for this batch
         let firstUsername: string | null = null;
-        let firstCredentials: { xcrewPw: string; empName: string } | null = null;
+        let firstPassword: string | null = null;
         const messagesToProcess: Message<WorkPsttQueueMessage>[] = [];
         const messagesToRetry: Message<WorkPsttQueueMessage>[] = [];
         
         for (const message of batch.messages) {
-            const { tag, username, xcrewPw, empName } = message.body;
+            const { tag, username, xcrewPw } = message.body;
             
             // Validate message tag
             if (tag !== 'work-pstt-fetch') {
@@ -58,20 +58,20 @@ export default {
                 continue;
             }
             
-            // Set the first username and credentials if not set yet
+            // Set the first username and password if not set yet
             if (firstUsername === null) {
                 firstUsername = username;
-                firstCredentials = { xcrewPw, empName };
+                firstPassword = xcrewPw;
             }
             
-            // If username matches the first username, validate credentials match
-            if (username === firstUsername && firstCredentials !== null) {
-                // Verify credentials match for the same username
-                if (xcrewPw === firstCredentials.xcrewPw && empName === firstCredentials.empName) {
+            // If username matches the first username, validate password matches
+            if (username === firstUsername && firstPassword !== null) {
+                // Verify password matches for the same username
+                if (xcrewPw === firstPassword) {
                     messagesToProcess.push(message);
                 } else {
-                    // Same username but different credentials - retry for next batch
-                    console.log(`Retrying message for same user but different credentials: ${username}`);
+                    // Same username but different password - retry for next batch
+                    console.log(`Retrying message for same user but different password: ${username}`);
                     messagesToRetry.push(message);
                 }
             } else {
