@@ -90,10 +90,29 @@ export default {
             const { username, xcrewPw, empName } = messagesToProcess[0].body;
             console.log(`Processing ${messagesToProcess.length} messages for user: ${username}`);
             
+            // Try to retrieve cached session from KV
+            const sessionKey = `xcrew_session:${username}`;
+            let client: KorailClient;
+            
             try {
-                // Create one client instance for all messages with same credentials
-                const client = new KorailClient(username, xcrewPw);
+                const cachedSession = await env.KORAIL_XCREW_SESSION_KV.get(sessionKey, 'json') as { cookieHeader: string; authenticated: boolean } | null;
                 
+                if (cachedSession && cachedSession.cookieHeader && cachedSession.authenticated) {
+                    console.log(`Using cached session for user: ${username}`);
+                    // Create client with cached session
+                    client = new KorailClient(username, xcrewPw, cachedSession.cookieHeader, cachedSession.authenticated);
+                } else {
+                    console.log(`No cached session found for user: ${username}, creating new client`);
+                    // Create new client (will authenticate on first use)
+                    client = new KorailClient(username, xcrewPw);
+                }
+            } catch (e: any) {
+                console.error(`Failed to retrieve cached session for ${username}:`, e.message);
+                // Fallback to new client
+                client = new KorailClient(username, xcrewPw);
+            }
+            
+            try {
                 // Process all dates for this user sequentially to avoid session conflicts
                 for (const message of messagesToProcess) {
                     try {
@@ -116,6 +135,23 @@ export default {
                         console.error(`Failed to fetch work pstt for ${message.body.date}:`, e.message);
                         // Let the message retry with default retry policy
                     }
+                }
+                
+                // After successful processing, cache the session for next batch
+                // TTL: 30 minutes (1800 seconds)
+                try {
+                    const sessionState = client.getSessionState();
+                    if (sessionState.authenticated && sessionState.cookieHeader) {
+                        await env.KORAIL_XCREW_SESSION_KV.put(
+                            sessionKey,
+                            JSON.stringify(sessionState),
+                            { expirationTtl: 1800 }
+                        );
+                        console.log(`Cached session for user: ${username} (TTL: 30 minutes)`);
+                    }
+                } catch (e: any) {
+                    console.error(`Failed to cache session for ${username}:`, e.message);
+                    // Non-critical error, continue
                 }
             } catch (e: any) {
                 console.error(`Failed to create client for ${username}:`, e.message);
