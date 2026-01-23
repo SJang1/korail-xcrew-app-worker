@@ -95,14 +95,23 @@ export default {
             let client: KorailClient;
             
             try {
-                const cachedSession = await env.KORAIL_XCREW_SESSION_KV.get(sessionKey, 'json') as { cookieHeader: string; authenticated: boolean } | null;
+                const cachedSessionRaw = await env.KORAIL_XCREW_SESSION_KV.get(sessionKey, 'json');
                 
-                if (cachedSession && cachedSession.cookieHeader && cachedSession.authenticated) {
+                // Validate cached session structure
+                if (cachedSessionRaw && 
+                    typeof cachedSessionRaw === 'object' && 
+                    'cookieHeader' in cachedSessionRaw && 
+                    'authenticated' in cachedSessionRaw &&
+                    typeof cachedSessionRaw.cookieHeader === 'string' &&
+                    typeof cachedSessionRaw.authenticated === 'boolean' &&
+                    cachedSessionRaw.authenticated === true) {
+                    
+                    const cachedSession = cachedSessionRaw as { cookieHeader: string; authenticated: boolean };
                     console.log(`Using cached session for user: ${username}`);
                     // Create client with cached session
                     client = new KorailClient(username, xcrewPw, cachedSession.cookieHeader, cachedSession.authenticated);
                 } else {
-                    console.log(`No cached session found for user: ${username}, creating new client`);
+                    console.log(`No valid cached session found for user: ${username}, creating new client`);
                     // Create new client (will authenticate on first use)
                     client = new KorailClient(username, xcrewPw);
                 }
@@ -141,7 +150,8 @@ export default {
                 // TTL: 30 minutes (1800 seconds)
                 try {
                     const sessionState = client.getSessionState();
-                    if (sessionState.authenticated && sessionState.cookieHeader) {
+                    // Only cache if authenticated (cookieHeader can be empty before auth)
+                    if (sessionState.authenticated) {
                         await env.KORAIL_XCREW_SESSION_KV.put(
                             sessionKey,
                             JSON.stringify(sessionState),
