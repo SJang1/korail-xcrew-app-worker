@@ -95,7 +95,7 @@ export default {
             let client: KorailClient;
             
             try {
-                const cachedSessionRaw = await env.KORAIL_XCREW_SESSION_KV.get(sessionKey, 'json');
+                const cachedSessionRaw = await env.KCrew_AppData.get(sessionKey, 'json');
                 
                 // Validate cached session structure
                 if (cachedSessionRaw && 
@@ -109,6 +109,7 @@ export default {
                     const cachedSession = cachedSessionRaw as { cookieHeader: string; authenticated: boolean };
                     console.log(`Using cached session for user: ${username}`);
                     // Create client with cached session
+                    // Note: If the session returns HTML (logout), KorailClient will automatically re-authenticate
                     client = new KorailClient(username, xcrewPw, cachedSession.cookieHeader, cachedSession.authenticated);
                 } else {
                     console.log(`No valid cached session found for user: ${username}, creating new client`);
@@ -152,7 +153,7 @@ export default {
                     const sessionState = client.getSessionState();
                     // Only cache if authenticated (cookieHeader can be empty before auth)
                     if (sessionState.authenticated) {
-                        await env.KORAIL_XCREW_SESSION_KV.put(
+                        await env.KCrew_AppData.put(
                             sessionKey,
                             JSON.stringify(sessionState),
                             { expirationTtl: 1800 }
