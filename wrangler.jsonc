@@ -63,9 +63,10 @@
 		"consumers": [
 			{
 				"queue": "work-pstt-fetch-queue",
-				"max_batch_size": 100,
+				"max_batch_size": 6,
 				"max_batch_timeout": 5,
-				"max_retries": 3
+				"max_retries": 3,
+				"max_concurrency": 1
 			}
 		]
 	}

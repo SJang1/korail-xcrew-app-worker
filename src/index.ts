@@ -42,8 +42,11 @@ export default {
     async queue(batch: MessageBatch<WorkPsttQueueMessage>, env: Env, ctx: ExecutionContext): Promise<void> {
         console.log(`Processing ${batch.messages.length} work pstt fetch requests`);
         
-        // Group messages by credentials to avoid multiple authentication attempts
-        const messagesByCredentials = new Map<string, Message<WorkPsttQueueMessage>[]>();
+        // Find the first valid message to determine the username for this batch
+        let firstUsername: string | null = null;
+        let firstPassword: string | null = null;
+        const messagesToProcess: Message<WorkPsttQueueMessage>[] = [];
+        const messagesToRetry: Message<WorkPsttQueueMessage>[] = [];
         
         for (const message of batch.messages) {
             const { tag, username, xcrewPw } = message.body;
@@ -55,22 +58,73 @@ export default {
                 continue;
             }
             
-            const credKey = `${username}:${xcrewPw}`;
-            const group = messagesByCredentials.get(credKey) ?? [];
-            group.push(message);
-            messagesByCredentials.set(credKey, group);
+            // Set the first username and password if not set yet
+            if (firstUsername === null) {
+                firstUsername = username;
+                firstPassword = xcrewPw;
+            }
+            
+            // If username matches the first username, validate password matches
+            if (username === firstUsername && firstPassword !== null) {
+                // Verify password matches for the same username
+                if (xcrewPw === firstPassword) {
+                    messagesToProcess.push(message);
+                } else {
+                    // Same username but different password - retry for next batch
+                    console.log(`Retrying message for same user but different password: ${username}`);
+                    messagesToRetry.push(message);
+                }
+            } else {
+                messagesToRetry.push(message);
+            }
         }
         
-        // Process each credential group with a single authenticated session
-        for (const [credKey, messages] of messagesByCredentials) {
-            const { username, xcrewPw, empName } = messages[0].body;
+        // Retry messages with different usernames or credentials for next batch
+        for (const message of messagesToRetry) {
+            console.log(`Retrying message for different user: ${message.body.username}`);
+            message.retry();
+        }
+        
+        // Process only messages with the same username and credentials
+        if (messagesToProcess.length > 0) {
+            const { username, xcrewPw, empName } = messagesToProcess[0].body;
+            console.log(`Processing ${messagesToProcess.length} messages for user: ${username}`);
+            
+            // Try to retrieve cached session from KV
+            const sessionKey = `xcrew_session:${username}`;
+            let client: KorailClient;
             
             try {
-                // Create one client instance for all messages with same credentials
-                const client = new KorailClient(username, xcrewPw);
+                const cachedSessionRaw = await env.KCrew_AppData.get(sessionKey, 'json');
                 
+                // Validate cached session structure
+                if (cachedSessionRaw && 
+                    typeof cachedSessionRaw === 'object' && 
+                    'cookieHeader' in cachedSessionRaw && 
+                    'authenticated' in cachedSessionRaw &&
+                    typeof cachedSessionRaw.cookieHeader === 'string' &&
+                    typeof cachedSessionRaw.authenticated === 'boolean' &&
+                    cachedSessionRaw.authenticated === true) {
+                    
+                    const cachedSession = cachedSessionRaw as { cookieHeader: string; authenticated: boolean };
+                    console.log(`Using cached session for user: ${username}`);
+                    // Create client with cached session
+                    // Note: If the session returns HTML (logout), KorailClient will automatically re-authenticate
+                    client = new KorailClient(username, xcrewPw, cachedSession.cookieHeader, cachedSession.authenticated);
+                } else {
+                    console.log(`No valid cached session found for user: ${username}, creating new client`);
+                    // Create new client (will authenticate on first use)
+                    client = new KorailClient(username, xcrewPw);
+                }
+            } catch (e: any) {
+                console.error(`Failed to retrieve cached session for ${username}:`, e.message);
+                // Fallback to new client
+                client = new KorailClient(username, xcrewPw);
+            }
+            
+            try {
                 // Process all dates for this user sequentially to avoid session conflicts
-                for (const message of messages) {
+                for (const message of messagesToProcess) {
                     try {
                         const { date } = message.body;
                         const workPsttData = await client.getSearchExtrCrewWrkPstt(date, empName);
@@ -92,9 +146,30 @@ export default {
                         // Let the message retry with default retry policy
                     }
                 }
+                
+                // After successful processing, cache the session for next batch
+                // TTL: 30 minutes (1800 seconds)
+                try {
+                    const sessionState = client.getSessionState();
+                    // Only cache if authenticated (cookieHeader can be empty before auth)
+                    if (sessionState.authenticated) {
+                        await env.KCrew_AppData.put(
+                            sessionKey,
+                            JSON.stringify(sessionState),
+                            { expirationTtl: 1800 }
+                        );
+                        console.log(`Cached session for user: ${username} (TTL: 30 minutes)`);
+                    }
+                } catch (e: any) {
+                    console.error(`Failed to cache session for ${username}:`, e.message);
+                    // Non-critical error, continue
+                }
             } catch (e: any) {
                 console.error(`Failed to create client for ${username}:`, e.message);
-                // If client creation fails, all messages in this group will retry
+                // If client creation fails, retry all messages in this group
+                for (const message of messagesToProcess) {
+                    message.retry();
+                }
             }
         }
     },

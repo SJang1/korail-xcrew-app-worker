@@ -40,14 +40,28 @@ export class KorailClient {
     private cookieHeader: string = "";
     private authenticated: boolean = false;
 
-    constructor(employeeId: string, password: string) {
+    constructor(employeeId: string, password: string, cookieHeader?: string, authenticated?: boolean) {
         this.employeeId = employeeId;
         this.password = password;
+        if (cookieHeader) {
+            this.cookieHeader = cookieHeader;
+        }
+        if (authenticated) {
+            this.authenticated = authenticated;
+        }
     }
 
     private updateCookies(res: Response) {
         const newCookies = extractCookiesFromResponse(res);
         this.cookieHeader = mergeCookies(this.cookieHeader, newCookies);
+    }
+
+    // Get session state for caching
+    getSessionState(): { cookieHeader: string; authenticated: boolean } {
+        return {
+            cookieHeader: this.cookieHeader,
+            authenticated: this.authenticated
+        };
     }
 
     async authenticate(): Promise<boolean> {
