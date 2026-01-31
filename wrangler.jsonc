@@ -23,6 +23,10 @@
 			"id": "03746d27313d4a7bb6f8799c7b495005"
 		},
 		{
+			"binding": "APP_AUTH_KV",
+			"id": "2798e8f0563741d1871f7642e9ab8a4b"
+		},
+		{
 			"binding": "PUSH_KV",
 			"id": "b98816527c614ccc803ad82bb716fbff"
 		},
@@ -87,7 +91,6 @@
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
 	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

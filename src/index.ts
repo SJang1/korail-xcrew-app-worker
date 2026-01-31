@@ -2,6 +2,7 @@ import { KorailClient, TrainClient } from './korail';
 import { createSession, destroySession, verifySession, deleteUserAccount, revokeAllSessions } from './auth';
 import { mapConcurrent, generateColor } from './utils';
 import { FCM, FcmOptions, EnhancedFcmMessage } from 'fcm-cloudflare-workers';
+import { verifyAppRequest, isValidP256PublicKey, appAuthKeys } from './appAuth';
 
 function compareVersions(v1: string, v2: string): number {
     const p1 = v1.split('.').map(Number);
@@ -357,7 +358,7 @@ const fcm = new FCM(fcmOptions);
             const corsHeaders = {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-App-Id, X-App-Timestamp, X-App-Nonce, X-App-Signature",
             };
 
             if (method === "OPTIONS") {
@@ -383,6 +384,27 @@ const fcm = new FCM(fcmOptions);
             }
 
             try {
+                const requiresAppAuth = !!session &&
+                    !session.isAdmin &&
+                    (path.startsWith("/api/xcrew/") ||
+                        path.startsWith("/api/train") ||
+                        path.startsWith("/api/user") ||
+                        path === "/api/auth/logout" ||
+                        path === "/api/auth/revoke-all" ||
+                        path === "/api/auth/cancel");
+
+                if (requiresAppAuth && path !== "/api/app/secret") {
+                    const appAuthMode = (env.APP_AUTH_MODE || "required").toLowerCase();
+                    const hasAppHeaders = !!request.headers.get("X-App-Id");
+
+                    if (appAuthMode === "required" || (appAuthMode === "optional" && hasAppHeaders)) {
+                        const appAuth = await verifyAppRequest(env, request, session!.username);
+                        if (!appAuth.ok) {
+                            return new Response(appAuth.message, { status: appAuth.status, headers: corsHeaders });
+                        }
+                    }
+                }
+
                 // --- Admin Auth Endpoints ---
                 if (path === "/api/admin/login" && method === "POST") {
                      const { username, password } = await request.json() as any;
@@ -494,6 +516,61 @@ const fcm = new FCM(fcmOptions);
                     const updateUrl = await env.KCrew_AppData.get("app_update_url") || "";
                     
                     return Response.json({ success: true, version, updateUrl }, { headers: corsHeaders });
+                }
+
+                if (path === "/api/app/secret" && method === "POST") {
+                    if (!session || session.isAdmin) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+                    const payload = await request.json().catch(() => ({})) as Record<string, unknown>;
+                    const headerDeviceId = request.headers.get("X-App-Id");
+                    const deviceId = (headerDeviceId ?? payload.deviceId);
+                    const publicKey = payload.publicKey;
+
+                    if (deviceId !== undefined && typeof deviceId !== "string") {
+                        return new Response("Invalid deviceId", { status: 400, headers: corsHeaders });
+                    }
+                    if (publicKey !== undefined && typeof publicKey !== "string") {
+                        return new Response("Invalid publicKey", { status: 400, headers: corsHeaders });
+                    }
+
+                    const deviceIdValue = (deviceId ?? "").trim();
+                    const publicKeyValue = (publicKey ?? "").trim();
+                    const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
+
+                    if (!deviceIdValue || !publicKeyValue) {
+                        return new Response("Missing deviceId or publicKey", { status: 400, headers: corsHeaders });
+                    }
+                    if (!base64UrlPattern.test(publicKeyValue) || !isValidP256PublicKey(publicKeyValue)) {
+                        return new Response("Invalid publicKey format", { status: 400, headers: corsHeaders });
+                    }
+
+                    const key = appAuthKeys.appPublicKeyKey(session.username, deviceIdValue);
+                    const existing = await env.APP_AUTH_KV.get(key);
+                    if (existing) {
+                        return Response.json({ success: false, message: "Secret already issued" }, { status: 409, headers: corsHeaders });
+                    }
+
+                    await env.APP_AUTH_KV.put(key, publicKeyValue);
+                    return Response.json({ success: true }, { headers: corsHeaders });
+                }
+
+                if (path === "/api/app/secret/reset" && method === "POST") {
+                    const payload = await request.json().catch(() => ({})) as Record<string, unknown>;
+                    const username = payload.username;
+                    const deviceId = payload.deviceId;
+
+                    if (typeof username !== "string" || typeof deviceId !== "string") {
+                        return new Response("Invalid username or deviceId", { status: 400, headers: corsHeaders });
+                    }
+
+                    const usernameValue = username.trim();
+                    const deviceIdValue = deviceId.trim();
+                    if (!usernameValue || !deviceIdValue) {
+                        return new Response("Missing username or deviceId", { status: 400, headers: corsHeaders });
+                    }
+
+                    const key = appAuthKeys.appPublicKeyKey(usernameValue, deviceIdValue);
+                    await env.APP_AUTH_KV.delete(key);
+                    return Response.json({ success: true }, { headers: corsHeaders });
                 }
 
                 if (path === "/api/app/version/check" && method === "GET") {
@@ -1351,4 +1428,3 @@ const fcm = new FCM(fcmOptions);
 		return new Response("Not Found", { status: 404 });
 	},
 } satisfies ExportedHandler<Env, WorkPsttQueueMessage>;
-
